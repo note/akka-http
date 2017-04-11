@@ -6,7 +6,7 @@ package akka.http.impl.engine.client
 
 import akka.http.scaladsl.settings.ClientConnectionSettings
 import akka.stream.scaladsl.{ BidiFlow, Flow, Keep, Sink, Source }
-import akka.stream.testkit.{ TestPublisher, TestSubscriber }
+import akka.stream.testkit.{ TestPublisher, TestSubscriber, Utils }
 import akka.stream.testkit.scaladsl.{ TestSink, TestSource }
 import akka.stream.{ ActorMaterializer, ActorMaterializerSettings }
 import akka.testkit.AkkaSpec
@@ -19,89 +19,99 @@ class ProxyGraphStageSpec extends AkkaSpec {
 
   "A ProxyGraphStage" should {
     "send CONNECT message and then forward incoming messages" in new Context {
-      source.sendNext(ByteString("anything"))
-      sink.request(1)
+      testCase { (source, flowInProbe, flowOutProbe, sink) ⇒
+        source.sendNext(ByteString("anything"))
+        sink.request(1)
 
-      val connectMsg = flowInProbe.requestNext()
-      connectMsg.utf8String should startWith(s"CONNECT ${targetHostName}:${targetPort} HTTP/1.1")
-      flowOutProbe.sendNext(ByteString("HTTP/1.0 200 Connection established\r\n\r\n"))
+        val connectMsg = flowInProbe.requestNext()
+        connectMsg.utf8String should startWith(s"CONNECT ${targetHostName}:${targetPort} HTTP/1.1")
+        flowOutProbe.sendNext(ByteString("HTTP/1.0 200 Connection established\r\n\r\n"))
 
-      // we deliberately wait here some time to see if ProxyGraphStage properly handles slow demand from Https Proxy
-      flowInProbe.expectNoMsg(300.millis)
+        // we deliberately wait here some time to see if ProxyGraphStage properly handles slow demand from Https Proxy
+        flowInProbe.expectNoMsg(300.millis)
 
-      source.sendNext(ByteString("something"))
-      flowInProbe.requestNext(ByteString("anything"))
-      flowOutProbe.sendNext(ByteString("anything"))
-      sink.expectNext(ByteString("anything"))
+        source.sendNext(ByteString("something"))
+        flowInProbe.requestNext(ByteString("anything"))
+        flowOutProbe.sendNext(ByteString("anything"))
+        sink.expectNext(ByteString("anything"))
 
-      flowInProbe.requestNext(ByteString("something"))
-      flowOutProbe.sendNext(ByteString("something"))
-      sink.requestNext(ByteString("something"))
+        flowInProbe.requestNext(ByteString("something"))
+        flowOutProbe.sendNext(ByteString("something"))
+        sink.requestNext(ByteString("something"))
 
-      source.sendComplete()
-      flowOutProbe.sendComplete()
-      sink.expectComplete()
+        source.sendComplete()
+        flowOutProbe.sendComplete()
+        sink.expectComplete()
+      }
     }
 
     "treat any 2xx response for CONNECT message as successful" in new Context {
-      source.sendNext(ByteString("anything"))
-      sink.request(1)
+      testCase { (source, flowInProbe, flowOutProbe, sink) ⇒
+        source.sendNext(ByteString("anything"))
+        sink.request(1)
 
-      flowInProbe.requestNext()
-      flowOutProbe.sendNext(ByteString("HTTP/1.0 201 Connection established\r\n\r\n"))
+        flowInProbe.requestNext()
+        flowOutProbe.sendNext(ByteString("HTTP/1.0 201 Connection established\r\n\r\n"))
 
-      source.sendComplete()
-      flowInProbe.requestNext(ByteString("anything"))
-      flowOutProbe.sendComplete()
-      sink.expectComplete()
+        source.sendComplete()
+        flowInProbe.requestNext(ByteString("anything"))
+        flowOutProbe.sendComplete()
+        sink.expectComplete()
+      }
     }
 
     "treat fragmented 200 response for CONNECT message as successful" in new Context {
-      source.sendNext(ByteString("anything"))
-      sink.request(100)
+      testCase { (source, flowInProbe, flowOutProbe, sink) ⇒
+        source.sendNext(ByteString("anything"))
+        sink.request(100)
 
-      flowInProbe.request(100)
+        flowInProbe.request(100)
 
-      flowInProbe.expectNext()
-      flowOutProbe.sendNext(ByteString("HTTP/1.0"))
-      flowOutProbe.sendNext(ByteString(" 200"))
-      flowOutProbe.sendNext(ByteString(" Connection established\r\n\r\n"))
+        flowInProbe.expectNext()
+        flowOutProbe.sendNext(ByteString("HTTP/1.0"))
+        flowOutProbe.sendNext(ByteString(" 200"))
+        flowOutProbe.sendNext(ByteString(" Connection established\r\n\r\n"))
 
-      val receivedByteString = flowInProbe.expectNext()
-      flowOutProbe.sendNext(receivedByteString)
+        val receivedByteString = flowInProbe.expectNext()
+        flowOutProbe.sendNext(receivedByteString)
 
-      sink.expectNext(ByteString("anything"))
+        sink.expectNext(ByteString("anything"))
 
-      source.sendComplete()
-      flowOutProbe.sendComplete()
-      sink.expectComplete()
+        source.sendComplete()
+        flowOutProbe.sendComplete()
+        sink.expectComplete()
+      }
     }
 
     "fail in case of non-2xx Proxy response for CONNECT message" in new Context {
-      source.sendNext(ByteString("anything"))
-      sink.request(100)
+      testCase { (source, flowInProbe, flowOutProbe, sink) ⇒
+        source.sendNext(ByteString("anything"))
+        sink.request(100)
 
-      flowInProbe.request(100)
+        flowInProbe.request(100)
 
-      flowOutProbe.sendNext(ByteString("HTTP/1.0 501 Some Error\r\n\r\n"))
+        flowOutProbe.sendNext(ByteString("HTTP/1.0 501 Some Error\r\n\r\n"))
 
-      sink.expectError match {
-        case _: ProxyConnectionFailedException ⇒
-        case e ⇒
-          fail(s"should be ProxyConnectionFailedException, caught ${e.getClass.getName} instead")
+        sink.expectError match {
+          case _: ProxyConnectionFailedException ⇒
+          case e ⇒
+            fail(s"should be ProxyConnectionFailedException, caught ${e.getClass.getName} instead")
+        }
       }
     }
 
     "fail in case of unexpected Proxy response for CONNECT message" in new Context {
-      source.sendNext(ByteString("anything"))
-      sink.request(100)
+      testCase { (source, flowInProbe, flowOutProbe, sink) ⇒
+        source.sendNext(ByteString("anything"))
+        sink.request(100)
 
-      flowInProbe.request(100)
+        flowInProbe.request(100)
 
-      flowOutProbe.sendNext(ByteString("something unexpected"))
+        flowOutProbe.sendNext(ByteString("something unexpected"))
 
-      source.expectCancellation()
-      sink.expectError()
+        source.expectCancellation()
+        sink.expectError()
+      }
     }
 
   }
@@ -112,20 +122,29 @@ class ProxyGraphStageSpec extends AkkaSpec {
     val targetHostName = "akka.io"
     val targetPort = 443
 
-    val proxyGraphStage = BidiFlow.fromGraph(new ProxyGraphStage(targetHostName, targetPort, clientSettings, system.log))
+    type PublisherProbe = TestPublisher.Probe[ByteString]
+    type SubscriberProbe = TestSubscriber.Probe[ByteString]
 
-    val flowInProbe = TestSubscriber.probe[ByteString]()
-    val flowOutProbe = TestPublisher.probe[ByteString]()
+    def testCase(fn: (PublisherProbe, SubscriberProbe, PublisherProbe, SubscriberProbe) ⇒ Unit): Unit = {
+      Utils.assertAllStagesStopped {
+        val proxyGraphStage = BidiFlow.fromGraph(new ProxyGraphStage(targetHostName, targetPort, clientSettings, system.log))
 
-    val proxyFlow = Flow.fromSinkAndSource(
-      Sink.fromSubscriber(flowInProbe),
-      Source.fromPublisher(flowOutProbe))
+        val flowInProbe = TestSubscriber.probe[ByteString]()
+        val flowOutProbe = TestPublisher.probe[ByteString]()
 
-    val flowUnderTest = proxyGraphStage.join(proxyFlow)
+        val proxyFlow = Flow.fromSinkAndSource(
+          Sink.fromSubscriber(flowInProbe),
+          Source.fromPublisher(flowOutProbe))
 
-    val (source, sink) = TestSource.probe[ByteString]
-      .via(flowUnderTest)
-      .toMat(TestSink.probe)(Keep.both)
-      .run()
+        val flowUnderTest = proxyGraphStage.join(proxyFlow)
+
+        val (source, sink) = TestSource.probe[ByteString]
+          .via(flowUnderTest)
+          .toMat(TestSink.probe)(Keep.both)
+          .run()
+
+        fn(source, flowInProbe, flowOutProbe, sink)
+      }
+    }
   }
 }
