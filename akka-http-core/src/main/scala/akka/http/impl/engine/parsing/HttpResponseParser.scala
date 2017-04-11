@@ -142,7 +142,9 @@ private[http] class HttpResponseParser(protected val settings: ParserSettings, p
           startNewMessage(input, bodyStart)
       }
 
-    if (statusCode.allowsEntity && (contextForCurrentResponse.get.requestMethod != HttpMethods.HEAD)) {
+    if (statusCode.allowsEntity &&
+      (contextForCurrentResponse.get.requestMethod != HttpMethods.HEAD) &&
+      (contextForCurrentResponse.get.requestMethod != HttpMethods.CONNECT)) {
       teh match {
         case None ⇒ clh match {
           case Some(`Content-Length`(contentLength)) ⇒

@@ -114,6 +114,31 @@ class ProxyGraphStageSpec extends AkkaSpec {
       }
     }
 
+    "forward additional data sent by Proxy" in new Context {
+      testCase { (source, flowInProbe, flowOutProbe, sink) ⇒
+        source.sendNext(ByteString("anything"))
+        sink.request(100)
+
+        flowInProbe.request(100)
+
+        flowInProbe.expectNext()
+        flowOutProbe.sendNext(ByteString("HTTP/1.0"))
+        flowOutProbe.sendNext(ByteString(" 200"))
+        flowOutProbe.sendNext(ByteString(" Connection established\r\n"))
+        flowOutProbe.sendNext(ByteString("Server: Apache/2.2.22\r\n\r\nsomething"))
+
+        val receivedByteString = flowInProbe.expectNext()
+        flowOutProbe.sendNext(receivedByteString)
+
+        sink.expectNext(ByteString("something"))
+        sink.expectNext(ByteString("anything"))
+
+        source.sendComplete()
+        flowOutProbe.sendComplete()
+        sink.expectComplete()
+      }
+    }
+
   }
 
   trait Context {
