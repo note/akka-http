@@ -39,12 +39,12 @@ object ClientTransport {
         .mapMaterializedValue(_.map(tcpConn ⇒ OutgoingConnection(tcpConn.localAddress, tcpConn.remoteAddress))(system.dispatcher))
   }
 
-  def proxy(localAddress: Option[InetSocketAddress], proxySettings: ProxySettings, settings: ClientConnectionSettings): ClientTransport =
-    new ProxyTransport(localAddress, proxySettings, settings)
+  def proxy(localAddress: Option[InetSocketAddress], proxyAddress: InetSocketAddress, settings: ClientConnectionSettings): ClientTransport =
+    new ProxyTransport(localAddress, proxyAddress, settings)
 
-  private case class ProxyTransport(localAddress: Option[InetSocketAddress], proxySettings: ProxySettings, settings: ClientConnectionSettings) extends ClientTransport {
+  private case class ProxyTransport(localAddress: Option[InetSocketAddress], proxyAddress: InetSocketAddress, settings: ClientConnectionSettings) extends ClientTransport {
     def connectTo(host: String, port: Int)(implicit system: ActorSystem): Flow[ByteString, ByteString, Future[OutgoingConnection]] = {
-      val networkFlow = Tcp().outgoingConnection(InetSocketAddress.createUnresolved(proxySettings.host, proxySettings.port), localAddress,
+      val networkFlow = Tcp().outgoingConnection(proxyAddress, localAddress,
         settings.socketOptions, halfClose = true, settings.connectingTimeout, settings.idleTimeout)
         .mapMaterializedValue(_.map(tcpConn ⇒ OutgoingConnection(tcpConn.localAddress, tcpConn.remoteAddress))(system.dispatcher))
 
