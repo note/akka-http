@@ -14,22 +14,8 @@ import akka.stream.stage.{ GraphStage, GraphStageLogic, InHandler, OutHandler }
 import akka.stream.{ Attributes, BidiShape, Inlet, Outlet }
 import akka.util.ByteString
 
-object ProxyGraphStage {
-  sealed trait State
-  // Entry state
-  case object Starting extends State
-
-  // State after CONNECT messages has been sent to Proxy and before Proxy responded back
-  case object Connecting extends State
-
-  // State after Proxy responded  back
-  case object Connected extends State
-}
-
 final class ProxyGraphStage(targetHostName: String, targetPort: Int, settings: ClientConnectionSettings, log: LoggingAdapter)
   extends GraphStage[BidiShape[ByteString, ByteString, ByteString, ByteString]] {
-
-  import ProxyGraphStage._
 
   val bytesIn: Inlet[ByteString] = Inlet("OutgoingTCP.in")
   val bytesOut: Outlet[ByteString] = Outlet("OutgoingTCP.out")
@@ -42,7 +28,6 @@ final class ProxyGraphStage(targetHostName: String, targetPort: Int, settings: C
   private val connectMsg = ByteString(s"CONNECT ${targetHostName}:${targetPort} HTTP/1.1\r\nHost: ${targetHostName}\r\n\r\n")
 
   override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = new GraphStageLogic(shape) {
-    private var state: State = Starting
 
     val parser = new HttpResponseParser(settings.parserSettings, HttpHeaderParser(settings.parserSettings, log)()) {
       override def handleInformationalResponses = false
@@ -64,14 +49,7 @@ final class ProxyGraphStage(targetHostName: String, targetPort: Int, settings: C
 
     setHandler(sslIn, new InHandler {
       override def onPush() = {
-        state match {
-          case Starting ⇒
-            throw new IllegalStateException("inlet OutgoingSSL.in unexpectedly pushed in Starting state")
-          case Connecting ⇒
-            throw new IllegalStateException("inlet OutgoingSSL.in unexpectedly pushed in Connecting state")
-          case Connected ⇒
-            push(bytesOut, grab(sslIn))
-        }
+        throw new IllegalStateException("inlet OutgoingSSL.in unexpectedly pushed in Starting state")
       }
 
       override def onUpstreamFinish(): Unit = {
@@ -82,62 +60,16 @@ final class ProxyGraphStage(targetHostName: String, targetPort: Int, settings: C
 
     setHandler(bytesIn, new InHandler {
       override def onPush() = {
-        state match {
-          case Starting ⇒
-          // that means that proxy had sent us something even before CONNECT to proxy was sent, therefore we just ignore it
-          case Connecting ⇒
-            val proxyResponse = grab(bytesIn)
-            parser.parseBytes(proxyResponse) match {
-              case NeedMoreData ⇒
-                pull(bytesIn)
-              case ResponseStart(_: StatusCodes.Success, _, _, _, _) ⇒
-                var pushed = false
-                val parseResult = parser.onPull()
-                require(parseResult == ParserOutput.MessageEnd, s"parseResult should be MessageEnd but was $parseResult")
-                parser.onPull() match {
-                  // NeedMoreData is what we emit in overriden `parseMessage` in case input.size == offset
-                  case NeedMoreData ⇒
-                  case RemainingBytes(bytes) ⇒
-                    push(sslOut, bytes) // parser already read more than expected, forward that data directly
-                    pushed = true
-                  case other ⇒
-                    throw new IllegalStateException(s"unexpected element of type ${other.getClass}")
-                }
-                parser.onUpstreamFinish()
-
-                state = Connected
-                if (isAvailable(bytesOut)) {
-                  pull(sslIn)
-                }
-                if (!pushed) {
-                  pull(bytesIn)
-                }
-              case ResponseStart(statusCode, _, _, _, _) ⇒
-                failStage(new ProxyConnectionFailedException(s"The HTTPS proxy rejected to open a connection to $targetHostName:$targetPort with status code: $statusCode"))
-              case other ⇒
-                throw new IllegalStateException(s"unexpected element of type $other")
-            }
-
-          case Connected ⇒
-            push(sslOut, grab(bytesIn))
-        }
+        // that means that proxy had sent us something even before CONNECT to proxy was sent, therefore we just ignore it
       }
 
       override def onUpstreamFinish(): Unit = complete(sslOut)
-
     })
 
     setHandler(bytesOut, new OutHandler {
       override def onPull() = {
-        state match {
-          case Starting ⇒
-            push(bytesOut, connectMsg)
-            state = Connecting
-          case Connecting ⇒
-          // don't need to do anything
-          case Connected ⇒
-            pull(sslIn)
-        }
+        push(bytesOut, connectMsg)
+        switchToConnecting()
       }
 
       override def onDownstreamFinish(): Unit = cancel(sslIn)
@@ -150,8 +82,94 @@ final class ProxyGraphStage(targetHostName: String, targetPort: Int, settings: C
       }
 
       override def onDownstreamFinish(): Unit = cancel(bytesIn)
-
     })
+
+    private def switchToConnecting() = {
+      setHandler(sslIn, new InHandler {
+        override def onPush() = {
+          throw new IllegalStateException("inlet OutgoingSSL.in unexpectedly pushed in Connecting state")
+        }
+
+        override def onUpstreamFinish(): Unit = {
+          complete(bytesOut)
+        }
+      })
+
+      setHandler(bytesIn, new InHandler {
+        override def onPush() = {
+          val proxyResponse = grab(bytesIn)
+          parser.parseBytes(proxyResponse) match {
+            case NeedMoreData ⇒
+              pull(bytesIn)
+            case ResponseStart(_: StatusCodes.Success, _, _, _, _) ⇒
+              var pushed = false
+              val parseResult = parser.onPull()
+              require(parseResult == ParserOutput.MessageEnd, s"parseResult should be MessageEnd but was $parseResult")
+              parser.onPull() match {
+                // NeedMoreData is what we emit in overriden `parseMessage` in case input.size == offset
+                case NeedMoreData ⇒
+                case RemainingBytes(bytes) ⇒
+                  push(sslOut, bytes) // parser already read more than expected, forward that data directly
+                  pushed = true
+                case other ⇒
+                  throw new IllegalStateException(s"unexpected element of type ${other.getClass}")
+              }
+              parser.onUpstreamFinish()
+
+              switchToConnected()
+              if (isAvailable(bytesOut)) {
+                pull(sslIn)
+              }
+              if (!pushed) {
+                pull(bytesIn)
+              }
+            case ResponseStart(statusCode, _, _, _, _) ⇒
+              failStage(new ProxyConnectionFailedException(s"The HTTPS proxy rejected to open a connection to $targetHostName:$targetPort with status code: $statusCode"))
+            case other ⇒
+              throw new IllegalStateException(s"unexpected element of type $other")
+          }
+        }
+
+        override def onUpstreamFinish(): Unit = complete(sslOut)
+      })
+
+      setHandler(bytesOut, new OutHandler {
+        override def onPull() = {
+          // don't need to do anything
+        }
+
+        override def onDownstreamFinish(): Unit = cancel(sslIn)
+      })
+    }
+
+    private def switchToConnected() = {
+      setHandler(sslIn, new InHandler {
+        override def onPush() = {
+          push(bytesOut, grab(sslIn))
+        }
+
+        override def onUpstreamFinish(): Unit = {
+          complete(bytesOut)
+        }
+      })
+
+      setHandler(bytesIn, new InHandler {
+        override def onPush() = {
+          push(sslOut, grab(bytesIn))
+        }
+
+        override def onUpstreamFinish(): Unit = complete(sslOut)
+      })
+
+      setHandler(bytesOut, new OutHandler {
+        override def onPull() = {
+          pull(sslIn)
+        }
+
+        override def onDownstreamFinish(): Unit = cancel(sslIn)
+      })
+
+    }
 
   }
 
