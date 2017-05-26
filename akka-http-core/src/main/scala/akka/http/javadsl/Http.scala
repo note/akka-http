@@ -351,6 +351,22 @@ class Http(system: ExtendedActorSystem) extends akka.actor.Extension {
     }
 
   /**
+   * Similar to `outgoingConnection` but allows to specify a user-defined transport layer to run the connection on.
+   */
+  def outgoingConnectionUsingTransport(
+    to:        ConnectHttp,
+    transport: ClientTransport,
+    settings:  ClientConnectionSettings,
+    log:       LoggingAdapter): Flow[HttpRequest, HttpResponse, CompletionStage[OutgoingConnection]] =
+    adaptOutgoingFlow {
+      if (to.isHttps) {
+        delegate.outgoingConnectionUsingTransport(to.host, to.port, transport.asScala, to.effectiveConnectionContext(defaultClientHttpsContext).asScala, settings.asScala, log)
+      } else {
+        delegate.outgoingConnectionUsingTransport(to.host, to.port, transport.asScala, to.effectiveConnectionContext(ConnectionContext.noEncryption()).asScala, settings.asScala, log)
+      }
+    }
+
+  /**
    * Starts a new connection pool to the given host and configuration and returns a [[akka.stream.javadsl.Flow]] which dispatches
    * the requests from all its materializations across this pool.
    * While the started host connection pool internally shuts itself down automatically after the configured idle
